@@ -1,0 +1,153 @@
+---
+- name: Create new Active-Directory Domain & Forest
+  hosts: localhost
+  vars:
+    temp_address: 172.16.108.144
+    dc_address: 172.16.108.11
+    dc_netmask_cidr: 24
+    dc_gateway: 172.16.108.2
+    dc_hostname: 'dc01'
+    domain_name: "demo.lab"
+    local_admin: '.\administrator'
+    temp_password: 'Changeme!'
+    dc_password: 'P@ssw0rd'
+    recovery_password: 'P@ssw0rd'
+    upstream_dns_1: 8.8.8.8
+    upstream_dns_2: 8.8.4.4
+    reverse_dns_zone: "172.16.108.0/24"
+    ntp_servers: "0.us.pool.ntp.org,1.us.pool.ntp.org,2.us.pool.ntp.org,3.us.pool.ntp.org"
+  gather_facts: no
+  tasks:
+  - name: Add host to Ansible inventory
+    add_host:
+      name: '{{ temp_address }}'
+      ansible_user: '{{ local_admin }}'
+      ansible_password: '{{ temp_password }}'
+      ansible_connection: winrm
+      ansible_winrm_transport: ntlm
+      ansible_winrm_server_cert_validation: ignore
+      ansible_winrm_port: 5986
+  - name: Wait for system to become reachable over WinRM
+    wait_for_connection:
+      timeout: 900
+    delegate_to: '{{ temp_address }}'
+  - name: Set static IP address
+    win_shell: "(new-netipaddress -InterfaceAlias Ethernet0 -IPAddress {{ dc_address }} -prefixlength {{dc_netmask_cidr}} -defaultgateway {{ dc_gateway }})"
+    delegate_to: '{{ temp_address }}'  
+    ignore_errors: True 
+  - name: Add host to Ansible inventory with new IP
+    add_host:
+      name: '{{ dc_address }}'
+      ansible_user: '{{ local_admin }}'
+      ansible_password: '{{ temp_password }}'
+      ansible_connection: winrm
+      ansible_winrm_transport: ntlm
+      ansible_winrm_server_cert_validation: ignore
+      ansible_winrm_port: 5986 
+  - name: Wait for system to become reachable over WinRM
+    wait_for_connection:
+      timeout: 900
+    delegate_to: '{{ dc_address }}'
+  - name: Set Password
+    win_user:
+      name: administrator
+      password: "{{dc_password}}"
+      state: present
+    delegate_to: '{{ dc_address }}'
+    ignore_errors: True  
+  - name: Add host to Ansible inventory with new Password
+    add_host:
+      name: '{{ dc_address }}'
+      ansible_user: '{{ local_admin }}'
+      ansible_password: '{{ dc_password }}'
+      ansible_connection: winrm
+      ansible_winrm_transport: ntlm
+      ansible_winrm_server_cert_validation: ignore
+      ansible_winrm_port: 5986 
+  - name: Wait for system to become reachable over WinRM
+    wait_for_connection:
+      timeout: 900
+    delegate_to: '{{ dc_address }}'
+  - name: Set upstream DNS server 
+    win_dns_client:
+      adapter_names: '*'
+      ipv4_addresses:
+      - '{{ upstream_dns_1 }}'
+      - '{{ upstream_dns_2 }}'
+    delegate_to: '{{ dc_address }}'
+  - name: Stop the time service
+    win_service:
+      name: w32time
+      state: stopped
+    delegate_to: '{{ dc_address }}'
+  - name: Set NTP Servers
+    win_shell: 'w32tm /config /syncfromflags:manual /manualpeerlist:"{{ntp_servers}}"'
+    delegate_to: '{{ dc_address }}'  
+  - name: Start the time service
+    win_service:
+      name: w32time
+      state: started  
+    delegate_to: '{{ dc_address }}'
+  - name: Disable firewall for Domain, Public and Private profiles
+    win_firewall:
+      state: disabled
+      profiles:
+      - Domain
+      - Private
+      - Public
+    tags: disable_firewall
+    delegate_to: '{{ dc_address }}'
+  - name: Change the hostname 
+    win_hostname:
+      name: '{{ dc_hostname }}'
+    register: res
+    delegate_to: '{{ dc_address }}'
+  - name: Reboot
+    win_reboot:
+    when: res.reboot_required   
+    delegate_to: '{{ dc_address }}'
+  - name: Install Active Directory
+    win_feature: >
+         name=AD-Domain-Services
+         include_management_tools=yes
+         include_sub_features=yes
+         state=present
+    register: result
+    delegate_to: '{{ dc_address }}'
+  - name: Create Domain
+    win_domain: >
+       dns_domain_name='{{ domain_name }}'
+       safe_mode_password='{{ recovery_password }}'
+    register: ad
+    delegate_to: "{{ dc_address }}"
+  - name: reboot server
+    win_reboot:
+     msg: "Installing AD. Rebooting..."
+     pre_reboot_delay: 15
+    when: ad.changed
+    delegate_to: "{{ dc_address }}"
+  - name: Set internal DNS server 
+    win_dns_client:
+      adapter_names: '*'
+      ipv4_addresses:
+      - '127.0.0.1'
+    delegate_to: '{{ dc_address }}'
+  - name: Create reverse DNS zone
+    win_shell: "Add-DnsServerPrimaryZone -NetworkID {{reverse_dns_zone}} -ReplicationScope Forest"
+    delegate_to: "{{ dc_address }}"    
+    retries: 30
+    delay: 60
+    register: result           
+    until: result is succeeded
+  - name: Check for xRemoteDesktopAdmin Powershell module
+    win_psmodule:
+      name: xRemoteDesktopAdmin
+      state: present
+    delegate_to: "{{ dc_address }}"
+  - name: Enable Remote Desktop
+    win_dsc:
+      resource_name: xRemoteDesktopAdmin
+      Ensure: present
+      UserAuthentication: NonSecure
+    delegate_to: "{{ dc_address }}"
+
