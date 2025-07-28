@@ -12,7 +12,7 @@ if [ "$1" == "" ];then
   echo "qm-import-vsim.sh <vmid> <vmname> <path-to-ova> <storage> <bridge1 - e0a/b> <bridge2 - e0c/d>"
   echo
   echo "example:"
-  echo "./qm-import-vsim.sh 135 vsim135 /var/lib/vz/import/vsim-netapp-DOT9.14.1-cm_nodar.ova lvm-thin vmbr1 vmbr0"
+  echo "./qm-import-vsim.sh 135 vsim135 /var/lib/vz/import/vsim-netapp-DOT9.14.1-cm_nodar.ova local-lvm vmbr1 vmbr0"
   echo
   exit
 fi
